@@ -2,10 +2,12 @@ name: Update Profiles on macOS
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "0 3 ? * MON,THU "
 
 jobs:
   update-profiles:
-    runs-on: macOS-latest
+    runs-on: macos-latest
 
     steps:
       - uses: actions/checkout@v3
@@ -24,18 +26,17 @@ jobs:
           update-setuptools: "true"
           update-wheel: "true"
 
-      - name: Run Py Scripts
+      - name: Run Scripts
         run: |
-          cd auto_getter
-          chmod a+x ./subconverter/darwin64/subconverter
-          chmod -R 777 ./subconverter/darwin64/*
+          chmod a+x ./auto_getter/subconverter/darwin64/subconverter
+          chmod -R 777 ./auto_getter/subconverter/darwin64/*
           pip3 install beautifulsoup4
-          python3 main.py
+          bash ./run.sh
 
       - name: Add Commit
         run: |
           china_date=$(TZ='Asia/Shanghai' date +%Y-%m-%d" "%H:%M:%S)
-          message="Update: \`${china_date}\`."
+          message="更新（代理配置）: \`${china_date}\` 更新。"
           git config --global user.email "<>"
           git config --global user.name "GitHub Actions Bot"
           git add .

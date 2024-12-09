@@ -7,19 +7,26 @@ profiles-sources:
       pages:
         - 'https://github.com/Alvin9999/new-pac/wiki/ss%E5%85%8D%E8%B4%B9%E8%B4%A6%E5%8F%B7'
         - 'https://github.com/Alvin9999/new-pac/wiki/v2ray%E5%85%8D%E8%B4%B9%E8%B4%A6%E5%8F%B7'
+    preprocessing: true
 
 
-  - name: 'Public from FQD'
+  # - name: 'Public from FQD'
+  #   sources:
+  #     tg-channels:
+  #       - 'ssList'
+  #       - 'ssrList'
+  #       - 'V2List'
+
+  # - name: 'Public from DU5'
+  #  sources:
+  #     files:
+  #       - 'https://raw.githubusercontent.com/du5/free/master/sub.list'
+
+  - name: 'Public from oneClash'
     sources:
-      tg-channels:
-        - 'ssList'
-        - 'ssrList'
-        - 'V2List'
-
-  - name: 'Public from DU5'
-    sources:
-      files:
-        - 'https://raw.githubusercontent.com/du5/free/master/sub.list'
+      subscribe-links:
+        - 'https://oneclash.githubrowcontent.com/$(date{%Y/%m/%Y%m%d}).yaml'
+    preprocessing: false
 
 # Sub Converter 设置。详见 https://github.com/tindy2013/subconverter/blob/master/README-cn.md。
 sub-converter:
@@ -34,12 +41,21 @@ sub-converter:
   add_emoji: 'false'
   # 用于设置是否删除节点名称中原有的 Emoji。
   remove_emoji: 'true'
+  # 用于开启该订阅链接的 TCP Fast Open。
+  scv: 'true'
 
 # 配置文件的相关设置
 profile:
   clash:
     not-supported-ciphers:
       - 'rc4'
+    correct-plugin-opts-mode:
+      - plugin: 'obfs'
+        match: ''
+        mode: 'tls'
+      - plugin: 'v2ray-plugin'
+        match: ''
+        mode: 'websocket'
 
 # 其他设置
 others:
