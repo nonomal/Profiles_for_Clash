@@ -1,15 +1,18 @@
 #!/usr/bin/python3
+import datetime
+from http.server import HTTPServer, SimpleHTTPRequestHandler
 import json
 import os
+import pytz
 import re
 import subprocess
 import sys
 from threading import Thread
 from time import sleep
 from urllib.parse import urlencode
-from urllib.request import urlretrieve, Request, urlopen
 
 import emoji
+import requests
 import yaml
 from bs4 import BeautifulSoup
 from googletrans import Translator
@@ -134,6 +137,24 @@ def rm_proxy_groups_proxies(proxy_groups, proxy_name):
     return proxy_groups
 
 
+def correct_clash_mode(profile_data, correct_mode_data):
+    """更正 Clash 配置文件中的“mode”参数。
+
+    :param profile_data: 字典：需处理的代理文件数据。
+    :param correct_mode_data: 列表：需要更正的模式数据。
+    :return: 字典：移除加密方式后的代理文件数据。
+    """
+    print('Correcting clash mode...')
+    proxies = profile_data['proxies']
+    correct_modes = correct_mode_data
+    for proxy in proxies:
+        for correct_mode in correct_modes:
+            if 'plugin' in proxy and proxy.plugin == correct_mode.plugin and proxy.mode == correct_mode.match:
+                proxy.mode = correct_mode.mode
+    profile_data['proxies'] = proxies
+    return profile_data
+
+
 def rm_outdated_proxies(profile_data):
     """移除过时代理。
 
@@ -182,11 +203,10 @@ def rename_proxies(profile_data):
         # 使用 http://ip-api.com 的 API 进行服务器信息查询。
         print('Getting No.{index}: "{server}" information...'.format(index=proxy_index, server=proxy['server']))
         ip_api_link = 'http://ip-api.com/json/' + proxy['server']
-        req = Request(url=ip_api_link)
-        resp = urlopen(req)
-        resp_data = resp.read()
-        encoding = resp.info().get_content_charset('utf-8')
-        ip_info = json.loads(resp_data.decode(encoding))
+        response = requests.get(ip_api_link)
+        response_data = response.content
+        encoding = response.encoding
+        ip_info = json.loads(response_data.decode(encoding))
         # 此时可判断域名是否存在。
         if 'country' not in ip_info:
             print('No such server: "{server}.'.format(server=proxy['server']))
@@ -265,6 +285,34 @@ def rm_dir_files(directory):
         print('The directory "' + directory + '" dos not exits!')
 
 
+def get_date(date_format):
+    """根据格式获取当前时间。
+
+    :param date_format: 字符串：时间格式。
+    :return: 字符串：当前时间。
+    """
+    date = datetime.datetime.now().astimezone(pytz.timezone('Asia/Shanghai')).strftime(date_format)
+    return date
+
+
+def handle_link(link):
+    """处理链接。
+
+    :param link: 字符串：需处理的字符串。
+    :return: 字符串：处理后的字符串。
+    """
+    print("Handle link...")
+    patterns = re.findall(r"[$][(](.*?)[)]", link)
+    if len(patterns) > 0:
+        for pattern in patterns:
+            keywords = re.findall(r"(.*?)[{]", pattern)
+            for keyword in keywords:
+                if keyword == 'date':
+                    link = str.replace(link, '$(' + pattern + ')', get_date(re.findall(r"[{](.*?)[}]", pattern)[0]))
+    print(f'Handled link: "{link}".')
+    return link
+
+
 def mkdir(directory):
     """创建文件夹。
 
@@ -316,26 +364,6 @@ def remove_repetitive_links(shared_links_stored_file):
         print('Removing repetitive links failed! No such file: "' + shared_links_stored_file + '".')
 
 
-def get_shared_links_from_element(page, tag, tag_class, shared_links_store_file, shared_link_begin_with):
-    """从网页元素中获取链接。
-
-    :param page: 字符串：网页链接。
-    :param tag: 字符串：网页元素标签。
-    :param tag_class: 字符串：网页元素所属类。
-    :param shared_links_store_file: 字符串：存储链接的文件。
-    :param shared_link_begin_with: 字符串：链接开头。
-    :return: 0。
-    """
-    print('Getting links from tag="' + tag + '" and class="' + tag_class + '"...')
-    soup = BeautifulSoup(page, 'html.parser')
-    for tag in soup.find_all(tag, class_=tag_class, string=re.compile(shared_link_begin_with)):
-        link = tag.get_text().strip()
-        print('Acquired link: "' + link + '".')
-        save_links(shared_links_store_file, link)
-    print('The links from tag="{tag}" and class="{tag_class}" has been successfully got!'.format(tag=tag,
-                                                                                                 tag_class=tag_class))
-
-
 def get_shared_links_from_tg_channels(tg_channel_name, shared_links_store_file, shared_link_begin_with):
     """从电报频道获取链接。
 
@@ -346,30 +374,26 @@ def get_shared_links_from_tg_channels(tg_channel_name, shared_links_store_file, 
     """
     print('Getting links from telegram channel: "' + tg_channel_name + '"...')
     tg_channel_pre_page = 'https://t.me/s/' + tg_channel_name
-    headers = {'User-Agent': 'Mozilla/5.0 AppleWebKit/537.36 Chrome/99.0.4844.51 Safari/537.36 Edg/99.0.1150.36'}
-    req = Request(tg_channel_pre_page, headers=headers)
-    resp = urlopen(req)
-    soup = BeautifulSoup(resp, 'html.parser')
-    # 将 br 标签替换为 \n
-    message_html_str = str(soup.select('div', class_='tgme_widget_message_text')
-                           ).replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
-    get_shared_links_from_element(message_html_str, 'div', 'tgme_widget_message_text', shared_links_store_file,
-                                  shared_link_begin_with)
+    get_shared_links_from_pages(tg_channel_pre_page, shared_links_store_file, shared_link_begin_with)
     print('The links from telegram channel: "' + tg_channel_name + '" has been successfully got!')
 
 
-def get_shared_links_from_files(remote_file, temp_file, shared_links_store_file, shared_link_begin_with):
+def get_shared_links_from_link_files(remote_file, temp_file, shared_links_store_file, supported_shared_link_begin_with, supported_subscribe_link_begin_with):
     """从文件行获取链接。
 
     :param remote_file: 字符串：远程文件链接。
     :param temp_file: 字符串：临时文件存放路径。
     :param shared_links_store_file: 字符串：链接存储文件。
-    :param shared_link_begin_with: 字符串：链接开头。
+    :param supported_shared_link_begin_with: 字符串：支持的服务器分享链接开头。
+    :param supported_subscribe_link_begin_with: 字符串：支持的订阅链接开头。
     :return: 0。
     """
     print('Getting links from "' + remote_file + '"...')
+    shared_link_begin_with = supported_shared_link_begin_with + '|' + supported_subscribe_link_begin_with
     if remote_file != '':
-        urlretrieve(remote_file, temp_file)
+        response = requests.get(remote_file)
+        with open(temp_file, 'wb') as file:
+            file.write(response.content)
         with open(temp_file, 'r', encoding='utf-8') as search_file:
             for line in search_file:
                 link_list = re.compile(shared_link_begin_with).findall(line)
@@ -392,33 +416,68 @@ def get_shared_links_from_pages(source, shared_links_store_file, shared_link_beg
     """
     print('Getting links from "' + source + '"...')
     if source != '':
-        headers = {'User-Agent': 'Mozilla/5.0 AppleWebKit/537.36 Chrome/99.0.4844.51 Safari/537.36 Edg/99.0.1150.36'}
-        req = Request(source, headers=headers)
-        resp = urlopen(req)
-        get_shared_links_from_element(resp, 'p', '', shared_links_store_file, shared_link_begin_with)
+        headers = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) '
+                                 'Chrome/112.0.0.0 Safari/537.36 uacq'}
+        response = requests.get(source, headers=headers)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        for link in soup.find_all(string=re.compile(shared_link_begin_with)):
+            print('Acquired link: "' + link + '".')
+            save_links(shared_links_store_file, link)
         print('The links from "' + source + '" has been successfully got!')
     else:
         print('Source is null!')
 
 
-def get_profile_link(parameters, shared_links_stored_file):
+def get_profiles_from_subscribe_links(subscribe_link, index, temp_profiles_path):
+    """从订阅链接获取配置文件。
+
+    :param: subscribe_link: 字符串：订阅链接。
+    :param: index: 整数：当前链接序号。
+    :param: temp_profiles_path: 字符串：存储临时配置文件的位置。
+    :return: 0。
+    """
+    print('Getting links from "' + subscribe_link + '"...')
+    subscribe_link = handle_link(subscribe_link)
+    headers = {'User-Agent': 'Mozilla/5.0 AppleWebKit/537.36 Chrome/99.0.4844.51 Safari/537.36 Edg/99.0.1150.36'}
+    response = requests.get(subscribe_link, headers=headers)
+    with open(temp_profiles_path + '/' + str(index) + '.yml', 'wb') as file:
+        file.write(response.content)
+
+
+def get_profile_link(parameters, shared_links_stored_file, temp_profiles_stored_dir):
     """获取生成配置文件的链接。
 
     :param parameters: 字典：用于 Sub Converter 的参数。
     :param shared_links_stored_file: 字符串：存储链接的文件的路径。
+    :param temp_profiles_stored_dir: 字符串：存储临时配置文件的路径。
     :return: 配置文件的链接。
     """
+    base_url = 'http://127.0.0.1:25500/sub?'
+    url = ''
     if os.path.exists(shared_links_stored_file):
-        url = ''
         for link in open(shared_links_stored_file, encoding='utf-8'):
-            url = url + '|' + link.strip()
+            if url == '':
+                url = link.strip()
+            else:
+                url = url + '|' + link.strip()
+    if os.path.isdir(temp_profiles_stored_dir):
+        if len(os.listdir(temp_profiles_stored_dir)) != 0:
+            for root, _, profiles in os.walk(temp_profiles_stored_dir):
+                for profile in profiles:
+                    # 将路径中的空格转换为 %20。
+                    profile_path = os.path.join(root, profile).replace('\\', '/').replace('./', '', 1).replace(' ', '%20')
+                    if url == '':
+                        url = 'http://' + web_host + ':'+ str(web_port) + '/' + profile_path
+                    else:
+                        url = url + '|http://' + web_host + ':'+ str(web_port) + '/' + profile_path
+
+    if url != '':
         parameters['url'] = url
-        base_url = 'http://127.0.0.1:25500/sub?'
         profile_link = base_url + urlencode(parameters)
         print('Generating Sub_Converter link: "' + profile_link + '".')
         return profile_link
     else:
-        print('Profile get failed! No such file: "' + shared_links_stored_file + '".')
+        print('Profile get failed! No such file or directory: "' + shared_links_stored_file + temp_profiles_stored_dir + '".')
         return ''
 
 
@@ -436,7 +495,8 @@ def get_profile(config_path):
     directories_config = others_config['directories']
     shared_links_stored_dir = directories_config['shared-links-stored-dir']
     profiles_stored_dir = directories_config['profiles-stored-dir']
-    temp_file_stored_dir = directories_config['temp-file-stored-dir']
+    temp_files_stored_dir = directories_config['temp-files-stored-dir']
+    temp_profiles_stored_dir = directories_config['temp-profiles-stored-dir']
     supported_shared_link_begin_with = others_config['supported-shared-link-begin-with']
     supported_subscribe_link_begin_with = others_config['supported-subscribe-link-begin-with']
     not_supported_yaml_tags = others_config['not-supported-yaml-tags']
@@ -446,6 +506,7 @@ def get_profile(config_path):
     profile_config = config['profile']
     profile_clash_config = profile_config['clash']
     clash_not_supported_ciphers = profile_clash_config['not-supported-ciphers']
+    correct_plugin_opts_mode = profile_clash_config['correct-plugin-opts-mode']
 
     # 创建文件夹并删除过时链接文件。
     for directory in directories_config:
@@ -458,7 +519,8 @@ def get_profile(config_path):
         profile_name = profile['name']
         shared_links_stored_file_path = shared_links_stored_dir + '/' + profile_name + '.txt'
         profile_path = profiles_stored_dir + '/' + profile_name + '.yml'
-        temp_file_path = temp_file_stored_dir + '/' + profile_name + '.txt'
+        temp_file_path = temp_files_stored_dir + '/' + profile_name + '.yml'
+        temp_profiles_path = temp_profiles_stored_dir  + '/' + profile_name
 
         # 生成配置文件。
         print('Getting profile for ' + profile_name + '...')
@@ -473,46 +535,53 @@ def get_profile(config_path):
                     source = profile['sources'][source_type][i]
 
                     # 根据来源类型选择相应方法。
-                    if source_type == 'pages':
-                        get_shared_links_from_pages(source, shared_links_stored_file_path,
-                                                    supported_shared_link_begin_with)
-                    elif source_type == 'tg-channels':
-                        if source != '':
-                            get_shared_links_from_tg_channels(source, shared_links_stored_file_path,
-                                                              supported_shared_link_begin_with)
+                    if source != '':
+                        if source_type == 'pages':
+                            get_shared_links_from_pages(source, shared_links_stored_file_path,
+                                                        supported_shared_link_begin_with)
+                        elif source_type == 'tg-channels':
+                                get_shared_links_from_tg_channels(source, shared_links_stored_file_path,
+                                                                  supported_shared_link_begin_with)
+                        elif source_type == 'link-files':
+                            get_shared_links_from_link_files(source, temp_file_path, shared_links_stored_file_path,
+                                                        supported_shared_link_begin_with, supported_subscribe_link_begin_with)
+                        elif source_type == 'subscribe-links':
+                            mkdir(temp_profiles_path)
+                            get_profiles_from_subscribe_links(source, i, temp_profiles_path)
                         else:
-                            print('Telegram channel is null!')
-                    elif source_type == 'files':
-                        get_shared_links_from_files(source, temp_file_path, shared_links_stored_file_path,
-                                                    supported_shared_link_begin_with)
+                            print('Don`t support the source type named "' + source_type + '" now!')
+                        sleep(3)
                     else:
-                        print('Don`t support the source type named "' + source_type + '" now!')
-                    sleep(3)
+                        print('Source is null!')
             else:
                 print(source_type + ' in "' + profile_name + '" is NULL!')
 
         remove_repetitive_links(shared_links_stored_file_path)
 
         # 下载配置。
-        sub_converter_link = get_profile_link(sub_converter_config, shared_links_stored_file_path)
+        sub_converter_link = get_profile_link(sub_converter_config, shared_links_stored_file_path, temp_profiles_stored_dir)
         if sub_converter_link != '':
-            urlretrieve(sub_converter_link, profile_path)
+            response = requests.get(sub_converter_link)
+            with open(profile_path, 'wb') as file:
+                file.write(response.content)
             print('Profile "' + profile_name + '" download complete!')
             # 对下载的配置文件进行操作。
-            profile_data = load_yaml_data(profile_path, not_supported_yaml_tags)
-            profile_data = rm_proxies_with_ciphers(profile_data, clash_not_supported_ciphers)
-            profile_data = rm_outdated_proxies(profile_data)
-            profile_data = rename_proxies(profile_data)
-            proxies = profile_data['proxies']
-            proxy_groups = profile_data['proxy-groups']
-            proxies = sort_dict_list(proxies, ['name'])
-            for proxy_group in proxy_groups:
-                proxy_group_index = proxy_groups.index(proxy_group)
-                proxy_group['proxies'].sort()
-                proxy_groups[proxy_group_index] = proxy_group
-            profile_data['proxies'] = proxies
-            profile_data['proxy-groups'] = proxy_groups
-            save_yaml_file(profile_data, profile_path)
+            if profile['preprocessing']:
+                profile_data = load_yaml_data(profile_path, not_supported_yaml_tags)
+                profile_data = rm_proxies_with_ciphers(profile_data, clash_not_supported_ciphers)
+                profile_data = rm_outdated_proxies(profile_data)
+                profile_data = correct_clash_mode(profile_data, correct_plugin_opts_mode)
+                profile_data = rename_proxies(profile_data)
+                proxies = profile_data['proxies']
+                proxy_groups = profile_data['proxy-groups']
+                proxies = sort_dict_list(proxies, ['name'])
+                for proxy_group in proxy_groups:
+                    proxy_group_index = proxy_groups.index(proxy_group)
+                    proxy_group['proxies'].sort()
+                    proxy_groups[proxy_group_index] = proxy_group
+                profile_data['proxies'] = proxies
+                profile_data['proxy-groups'] = proxy_groups
+                save_yaml_file(profile_data, profile_path)
             print('Profile "' + profile_name + '" update complete!')
         else:
             print('Profile "' + profile_name + '" update failed!')
@@ -535,13 +604,33 @@ def run_sub_converter():
     system_platform = sys.platform
     print('Your system platform is "' + system_platform + '".')
     if system_platform == 'linux':
-        process = subprocess.run(args='./subconverter/linux32/subconverter')
+        process = subprocess.run(args='./subconverter/linux64/subconverter')
     elif system_platform == 'win32':
-        process = subprocess.run(['powershell', './subconverter/win32/subconverter.exe'])
+        process = subprocess.run(['powershell', './subconverter/win64/subconverter.exe'])
     elif system_platform == 'darwin':
         process = subprocess.run(args='./subconverter/darwin64/subconverter')
     else:
         print('The platform "' + system_platform + '" does not support now!')
+
+
+def run_web_server(host, port):
+    """
+    启动 HTTP Web 服务器。
+
+    :param host: 字符串：服务器主机。
+    :param port: 字符串：服务器端口。
+    :return: 0。
+    """
+    server = HTTPServer((host, port), SimpleHTTPRequestHandler)
+    print(f"Web 服务器已启动，访问地址: http://{host}:{port}")
+    try:
+        server.serve_forever()
+    except OSError as e:
+        print(f"端口 {port} 被占用或无法访问: {e}")
+    except KeyboardInterrupt:
+        print("\nWeb 服务器已停止。")
+    except Exception as e:
+        print(f"启动服务器时出现错误: {e}")
 
 
 def main():
@@ -549,12 +638,16 @@ def main():
 
     :return: 0。
     """
-    sub_converter = Thread(target=run_sub_converter, daemon=True)
-    profile_getter = Thread(target=run_get_profile, daemon=True)
-    sub_converter.start()
-    profile_getter.start()
-    profile_getter.join()
+    sub_converter_thread = Thread(target=run_sub_converter, daemon=True)
+    profile_getter_thread = Thread(target=run_get_profile, daemon=True)
+    web_server_thread = Thread(target=run_web_server, args=(web_host, web_port), daemon=True)
+    sub_converter_thread.start()
+    web_server_thread.start()
+    profile_getter_thread.start()
+    profile_getter_thread.join()
 
 
 if __name__ == '__main__':
+    web_host = 'localhost'
+    web_port = 8000
     main()
